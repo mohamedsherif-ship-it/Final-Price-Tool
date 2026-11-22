@@ -39,27 +39,35 @@ function famOf(r){
   for(let g=0;g<GROUPS.length;g++){const i=GROUPS[g].indexOf(p);if(i>=0)return[g,i,p]}
   return[GROUPS.length,0,p];
 }
+const CU_CODE=/^(cubusbar\w*|100000000000000|fntri)$/;
+const CU_DESC=/copper bus|bus ?way|full neutral|neutral and earth/i;
 function lookup(r,DB,P){
-  const c=K(r.code),d=r.desc||'';
-  if(COPPER.test(c)||/copper bus|neutral and earth/i.test(d))return['COPPER',P.copper,''];
-  if((r.table||'').slice(0,4).toUpperCase()==='PNAS'||/pan assem/i.test(d))
-    return has(DB.na,c)&&DB.na[c][1]!=null?['NON ABB',DB.na[c][1],'']:['NON ABB',null,''];
+  const c=K(r.code),d=r.desc||'',t=(r.table||'').slice(0,4).toUpperCase();
+  const na=has(DB.na,c)&&DB.na[c][1]!=null?DB.na[c][1]:null;
+  if(CU_CODE.test(c)||CU_DESC.test(d))return['COPPER',P.copper,''];
+  if(t==='PNAS'||/pan assem/i.test(d))return['NON ABB',na,''];
+  if(t==='SLSW'||/selector switch/i.test(d))return['NON ABB',na,''];
+  if(/unikit/i.test(d))return['PANELS',has(DB.pn,c)&&DB.pn[c][1]!=null?DB.pn[c][1]:null,has(DB.pn,c)?DB.pn[c][0]:''];
   if(has(DB.abb,c)&&DB.abb[c][0]!=null)return['ABB',DB.abb[c][0],DB.abb[c][1]];
   if(has(DB.pn,c)&&DB.pn[c][1]!=null)return['PANELS',DB.pn[c][1],DB.pn[c][0]];
   if(has(DB.tl,c)&&DB.tl[c]!=null)return['PRO-E',DB.tl[c],''];
-  if(has(DB.na,c)&&DB.na[c][1]!=null)return['NON ABB',DB.na[c][1],''];
+  if(na!=null)return['NON ABB',na,''];
   return[/\bABB\b/i.test(d)?'ABB':'NON ABB',null,''];
 }
+function nfam(r){const d=r.desc||'';if(/plain cover/i.test(d))return'COVER';if(/pan assem/i.test(d))return'PNAS';const p=(r.table||'').slice(0,4).toUpperCase();return p||d.split(/[\s,]/)[0].toUpperCase()}
+const PLACED={'ABB':'ABB section (manual price)','NON ABB':'End of NON ABB (manual price)','PANELS':'PANELS section (manual price)'};
 function compute(rows,DB,P){
   const S={},nf=[];ORDER.forEach(s=>S[s]=[]);
   rows.forEach(r=>{
     const[sec,u,ref]=lookup(r,DB,P),man=u==null;
     const o={...r,ref,unit:man?null:u,total:man?0:u*r.qty,manual:man};
     S[sec].push(o);
-    if(man)nf.push({...r,placed:sec==='ABB'?'ABB section (manual price)':'End of NON ABB (manual price)'});
+    if(man)nf.push({...r,placed:PLACED[sec]||'Manual price'});
   });
   S['ABB'].sort((a,b)=>{const x=famOf(a),y=famOf(b);return x[0]-y[0]||x[1]-y[1]||(x[0]===GROUPS.length&&x[2]<y[2]?-1:x[0]===GROUPS.length&&x[2]>y[2]?1:0)||a.serial-b.serial});
-  ['NON ABB','PANELS','PRO-E','COPPER'].forEach(s=>S[s].sort((a,b)=>(a.manual-b.manual)||a.serial-b.serial));
+  const famSort=s=>{const ff={};S[s].forEach(r=>{const k=nfam(r);ff[k]=Math.min(ff[k]===undefined?1e9:ff[k],r.serial)});
+    S[s].sort((a,b)=>(a.manual-b.manual)||(a.manual?0:ff[nfam(a)]-ff[nfam(b)]||(nfam(a)<nfam(b)?-1:nfam(a)>nfam(b)?1:0))||a.serial-b.serial)};
+  ['NON ABB','PANELS','PRO-E','COPPER'].forEach(famSort);
   const sum=s=>S[s].reduce((a,r)=>a+r.total,0);
   const na=sum('NON ABB'),abb=sum('ABB'),pn=sum('PANELS'),tl=sum('PRO-E'),cu=sum('COPPER');
   const L=[['NON ABB',na/P.euroMarket,'EGP to EUR'],['ABB 20%',abb*P.disc*0.2*(P.euroBlack/P.euroMarket),'EUR'],['ABB 80%',abb*P.disc*0.8,'EUR'],['ABB Local',0,'EGP'],['PANELS',pn,'EUR'],['PRO-E 20%',tl*0.2*P.euroBlack/P.euroMarket,'EUR'],['PRO-E 80%',tl*0.8,'EUR'],['COPPER',cu/P.euroMarket,'EGP to EUR']];
@@ -87,7 +95,8 @@ const LAY={'NON ABB':[3,54],'ABB':[56,151],'PANELS':[212,235],'PRO-E':[237,256],
 async function fillTemplate(b64,R,P){
   const wb=new ExcelJS.Workbook();
   await wb.xlsx.load(Uint8Array.from(atob(b64),c=>c.charCodeAt(0)).buffer);
-  const ws=wb.getWorksheet('Pricing'),over=[],Y={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF2CC'}};
+  const ws=wb.getWorksheet('Pricing'),over=[];
+  wb.worksheets.forEach(w=>{if(w.pageSetup)w.pageSetup.printArea=undefined});try{wb.definedNames.model=[]}catch(e){}
   [['G270','euroMarket'],['G271','euroBlack'],['G272','disc'],['G273','copper']].forEach(([a,k])=>{ws.getCell(a).value=P[k]});
   ORDER.forEach(s=>{
     const[a,b]=LAY[s];
@@ -96,7 +105,7 @@ async function fillTemplate(b64,R,P){
       const n=a+i,g=c=>ws.getCell(n,c);
       g(1).value=r.code;g(2).value=r.desc;g(3).value=r.qty;
       const d=g(4).value,e=g(5).value,f=g(6).value;
-      if(r.manual){g(4).value=null;g(5).value=null;for(let c=1;c<=6;c++)g(c).fill=Y;if(f&&f.formula)g(6).value={formula:f.formula,result:0};return}
+      if(r.manual)return;
       if(d&&d.formula&&s!=='COPPER'&&!/^IFERROR/i.test(d.formula))g(4).value={formula:'IFERROR('+d.formula+',"")',result:r.ref};
       if(e&&e.formula)g(5).value={formula:e.formula,result:r.unit};
       if(f&&f.formula)g(6).value={formula:f.formula,result:r.total};
