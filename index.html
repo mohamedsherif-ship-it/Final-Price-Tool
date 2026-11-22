@@ -12,7 +12,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px
 .w{overflow-x:auto}details{border:1px solid var(--bd);border-radius:8px;margin:8px 0;padding:6px 10px}summary{cursor:pointer;font-weight:600}summary span{color:var(--mu);font-weight:400;font-size:13px}
 tr.m td{background:var(--hl)}tr.b td{font-weight:700}.rt{display:flex;gap:12px;flex-wrap:wrap}.rt label{font-size:12px;color:var(--mu)}.rt input{display:block;width:110px;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
 input[type=file]{margin:8px 0}[hidden]{display:none!important}</style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script></head><body><main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script></head><body><main>
 <h1>Final Price Tool</h1><div class="mu" id="dbl"></div>
 <div class="card"><b>1. Upload your material list (Excel)</b><br><span class="mu">Columns needed: SUPPLIERCODE, Quantity. Optional: DESCRIPTION, SERIAL, TABLECODE.</span><br><input type="file" id="mat" accept=".xls,.xlsx"></div>
 <div id="res" hidden>
@@ -82,22 +82,39 @@ function parseMat(wb){
   if(ic<0||iq<0)throw new Error('Columns SUPPLIERCODE and Quantity are required');
   return a.slice(1).filter(r=>r[ic]!=null&&String(r[ic]).trim()!=='').map((r,i)=>({serial:is>=0&&r[is]!=null?+r[is]:i,code:String(r[ic]).trim(),desc:id>=0?String(r[id]||''):'',qty:+r[iq]||0,table:it>=0&&r[it]!=null?String(r[it]):''}));
 }
-function buildSheet(R,P){
-  const A=[['SUPPLIERCODE','DESCRIPTION','Quantity','REF','UNIT PRICE','TOTAL PRICE','NOTE']],rg={};
-  let rCu=null;
-  const rates=[];
-  ORDER.forEach(s=>{A.push([s]);const a=A.length+1;R.S[s].forEach(r=>{const n=A.length+1;A.push([r.code,r.desc,r.qty,r.ref,r.manual?null:{t:'n',v:r.unit},{t:'n',v:r.total,f:`C${n}*E${n}`},r.manual?'MANUAL PRICE':''])});rg[s]=R.S[s].length?[a,A.length]:null;if(s==='COPPER')rg.cuRows=R.S[s].map((r,i)=>a+i)});
-  A.push([]);A.push(['RATES']);
-  const rr={};[['euroMarket','Euro market'],['euroBlack','Euro black'],['disc','Discount factor'],['copper','Copper price (EGP/unit)']].forEach(([k,l])=>{A.push([l,{t:'n',v:P[k]}]);rr[k]='$B$'+A.length});
-  (rg.cuRows||[]).forEach(n=>{if(!A[n-1][5]||true){const r=R.S.COPPER[n-rg.cuRows[0]];if(!r.manual)A[n-1][4]={t:'n',v:r.unit,f:rr.copper}}});
-  A.push([]);A.push(['COST SUMMARY (EUR)']);
-  const SM=s=>rg[s]?`SUM(F${rg[s][0]}:F${rg[s][1]})`:'0',st=A.length+1;
-  const lines=[['NON ABB',`${SM('NON ABB')}/${rr.euroMarket}`],['ABB 20%',`${SM('ABB')}*${rr.disc}*0.2*(${rr.euroBlack}/${rr.euroMarket})`],['ABB 80%',`${SM('ABB')}*${rr.disc}*0.8`],['ABB Local','0'],['PANELS',SM('PANELS')],['PRO-E 20%',`${SM('PRO-E')}*0.2*${rr.euroBlack}/${rr.euroMarket}`],['PRO-E 80%',`${SM('PRO-E')}*0.8`],['COPPER',`${SM('COPPER')}/${rr.euroMarket}`]];
-  lines.forEach((l,i)=>A.push([l[0],{t:'n',v:R.L[i][1],f:l[1]}]));
-  A.push(['Cost',{t:'n',v:R.cost,f:`SUM(B${st}:B${A.length})`}]);const cr=A.length;
-  R.margins.forEach(m=>A.push(['Total for margin '+m[0],{t:'n',v:m[1],f:`B${cr}/${m[0]}`}]));
-  const ws=XLSX.utils.aoa_to_sheet(A);ws['!cols']=[{wch:26},{wch:60},{wch:9},{wch:18},{wch:12},{wch:14},{wch:15}];
-  return ws;
+function buildWorkbook(R,P){
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('Pricing');
+  ws.columns=[{width:26},{width:62},{width:10},{width:20},{width:14},{width:16},{width:16}];
+  const th={style:'thin'},bd={top:th,left:th,bottom:th,right:th},NF='#,##0.00',fill=c=>({type:'pattern',pattern:'solid',fgColor:{argb:c}});
+  ws.addRow(['SUPPLIERCODE','DESCRIPTION','Quantity','REF','UNIT PRICE','TOTAL PRICE','NOTE']).eachCell(c=>{c.font={bold:true,size:12};c.fill=fill('FFC0C0C0');c.border=bd});
+  const rg={},cu=[];
+  ORDER.forEach(s=>{
+    const hr=ws.addRow([s]);ws.mergeCells(hr.number,1,hr.number,7);hr.getCell(1).font={bold:true,size:16};hr.getCell(1).fill=fill('FFFF8080');
+    const a=ws.rowCount+1;
+    R.S[s].forEach(r=>{
+      const x=ws.addRow([r.code,r.desc,r.qty,r.ref,r.manual?null:r.unit,null,r.manual?'MANUAL PRICE':'']);
+      x.getCell(6).value={formula:`C${x.number}*E${x.number}`,result:r.total};
+      for(let c=1;c<=7;c++){const k=x.getCell(c);k.border=bd;if(c>=5&&c<=6)k.numFmt=NF;if(r.manual)k.fill=fill('FFFFF2CC')}
+      if(s==='COPPER'&&!r.manual)cu.push(x.getCell(5));
+    });
+    rg[s]=R.S[s].length?[a,ws.rowCount]:null;
+  });
+  ws.addRow([]);ws.addRow(['RATES']).getCell(1).font={bold:true,size:14};
+  const rr={};
+  [['euroMarket','Euro market'],['euroBlack','Euro black'],['disc','Discount factor'],['copper','Copper price (EGP/unit)']].forEach(([k,l])=>{
+    const x=ws.addRow([l,P[k]]);x.getCell(2).fill=fill('FFDDEBF7');x.getCell(2).border=bd;rr[k]='$B$'+x.number});
+  cu.forEach(c=>{c.value={formula:rr.copper,result:P.copper}});
+  ws.addRow([]);ws.addRow(['COST SUMMARY (EUR)']).getCell(1).font={bold:true,size:14};
+  const SM=s=>rg[s]?`SUM(F${rg[s][0]}:F${rg[s][1]})`:'0',st=ws.rowCount+1;
+  const F=[`${SM('NON ABB')}/${rr.euroMarket}`,`${SM('ABB')}*${rr.disc}*0.2*(${rr.euroBlack}/${rr.euroMarket})`,`${SM('ABB')}*${rr.disc}*0.8`,'0',SM('PANELS'),`${SM('PRO-E')}*0.2*${rr.euroBlack}/${rr.euroMarket}`,`${SM('PRO-E')}*0.8`,`${SM('COPPER')}/${rr.euroMarket}`];
+  const line=(l,f,v,b)=>{const x=ws.addRow([l]);x.getCell(2).value={formula:f,result:v};x.getCell(2).numFmt=NF;x.getCell(1).font=x.getCell(2).font={bold:!!b};x.getCell(1).border=x.getCell(2).border=bd};
+  R.L.forEach((x,i)=>line(x[0],F[i],x[1]));
+  line('Cost',`SUM(B${st}:B${ws.rowCount})`,R.cost,true);const cr=ws.rowCount;
+  R.margins.forEach(m=>line('Total for margin '+m[0],`B${cr}/${m[0]}`,m[1]));
+  const nf=wb.addWorksheet('Not Found');nf.columns=[{width:10},{width:26},{width:70},{width:10},{width:32}];
+  nf.addRow(['SERIAL','SUPPLIERCODE','DESCRIPTION','Quantity','Placed in']).eachCell(c=>{c.font={bold:true};c.fill=fill('FFC0C0C0');c.border=bd});
+  R.nf.forEach(r=>nf.addRow([r.serial,r.code,r.desc,r.qty,r.placed]));
+  return wb;
 }
 
 if(typeof document!=='undefined'){
@@ -118,10 +135,11 @@ function render(){
 }
 $('mat').onchange=async ev=>{try{const fl=ev.target.files[0];MAT=parseMat(await rd(fl));name=fl.name;render()}catch(x){alert(x.message)}};
 ['euroMarket','euroBlack','disc','copper'].forEach(k=>{$(k).value=P[k];$(k).oninput=()=>{const v=parseFloat($(k).value);if(v>0){P[k]=v;render()}}});
-$('dl').onclick=()=>{
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,buildSheet(R,P),'Pricing');
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([['SERIAL','SUPPLIERCODE','DESCRIPTION','Quantity','Placed in']].concat(R.nf.map(r=>[r.serial,r.code,r.desc,r.qty,r.placed]))),'Not Found');
-  XLSX.writeFile(wb,name.replace(/\.xlsx?$/i,'')+'_priced.xlsx');
+$('dl').onclick=async()=>{
+  if(typeof ExcelJS==='undefined'){alert('Excel library did not load. Check your internet connection and reload.');return}
+  try{const buf=await buildWorkbook(R,P).xlsx.writeBuffer();
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  a.download=name.replace(/\.xlsx?$/i,'')+'_priced.xlsx';a.click()}catch(x){alert('Download failed: '+x.message)}
 };
 $('adm').onclick=async()=>{
   const p=prompt('Admin password');if(p==null)return;
